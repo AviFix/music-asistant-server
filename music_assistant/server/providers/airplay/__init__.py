@@ -110,6 +110,11 @@ CONF_CREDENTIALS = "credentials"
 CACHE_KEY_PREV_VOLUME = "airplay_prev_volume"
 FALLBACK_VOLUME = 20
 
+AIRPLAY_FLOW_PCM_FORMAT = AudioFormat(
+    content_type=ContentType.PCM_F32LE,
+    sample_rate=44100,
+    bit_depth=32,
+)
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
 )
@@ -267,7 +272,6 @@ class RaopStream:
             output_format=AIRPLAY_PCM_FORMAT,
             filter_params=get_player_filter_params(self.mass, player_id),
             audio_output=write,
-            logger=self.airplay_player.logger.getChild("ffmpeg"),
         )
         await self._ffmpeg_proc.start()
         await asyncio.to_thread(os.close, write)
@@ -403,6 +407,9 @@ class RaopStream:
                     self.mass.create_task(self.mass.player_queues.resume(queue.queue_id))
                 else:
                     logger.warning("Packet loss detected!")
+            if "end of stream reached" in line:
+                logger.debug("End of stream reached")
+                break
 
             logger.log(VERBOSE_LOG_LEVEL, line)
 
@@ -507,7 +514,7 @@ class AirplayProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -646,6 +653,9 @@ class AirplayProvider(PlayerProvider):
         """Handle PLAY MEDIA on given player."""
         async with self._play_media_lock:
             player = self.mass.players.get(player_id)
+            # set the active source for the player to the media queue
+            # this accounts for syncgroups and linked players (e.g. sonos)
+            player.active_source = media.queue_id
             if player.synced_to:
                 # should not happen, but just in case
                 raise RuntimeError("Player is synced")
@@ -666,25 +676,17 @@ class AirplayProvider(PlayerProvider):
                 # special case: UGP stream
                 ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
                 ugp_stream = ugp_provider.streams[media.queue_id]
-                input_format = ugp_stream.audio_format
-                audio_source = ugp_stream.subscribe_raw()
-            elif media.media_type == MediaType.RADIO and media.queue_id and media.queue_item_id:
-                # radio stream - consume media stream directly
-                input_format = AIRPLAY_PCM_FORMAT
-                queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
-                audio_source = self.mass.streams.get_media_stream(
-                    streamdetails=queue_item.streamdetails,
-                    pcm_format=AIRPLAY_PCM_FORMAT,
-                )
+                input_format = ugp_stream.output_format
+                audio_source = ugp_stream.subscribe()
             elif media.queue_id and media.queue_item_id:
                 # regular queue (flow) stream request
-                input_format = AIRPLAY_PCM_FORMAT
+                input_format = AIRPLAY_FLOW_PCM_FORMAT
                 audio_source = self.mass.streams.get_flow_stream(
                     queue=self.mass.player_queues.get(media.queue_id),
                     start_queue_item=self.mass.player_queues.get_item(
                         media.queue_id, media.queue_item_id
                     ),
-                    pcm_format=AIRPLAY_PCM_FORMAT,
+                    pcm_format=input_format,
                 )
             else:
                 # assume url or some other direct path
@@ -743,6 +745,7 @@ class AirplayProvider(PlayerProvider):
             await airplay_player.raop_stream.send_cli_command(f"VOLUME={volume_level}\n")
         mass_player = self.mass.players.get(player_id)
         mass_player.volume_level = volume_level
+        mass_player.volume_muted = volume_level == 0
         self.mass.players.update(player_id)
         # store last state in cache
         await self.mass.cache.set(player_id, volume_level, base_key=CACHE_KEY_PREV_VOLUME)
@@ -804,7 +807,9 @@ class AirplayProvider(PlayerProvider):
         group_leader.group_childs.remove(player_id)
         player.synced_to = None
         await self.cmd_stop(player_id)
-        self.mass.players.update(player_id)
+        # make sure that the player manager gets an update
+        self.mass.players.update(player.player_id, skip_forward=True)
+        self.mass.players.update(group_leader.player_id, skip_forward=True)
 
     async def _getcliraop_binary(self):
         """Find the correct raop/airplay binary belonging to the platform."""

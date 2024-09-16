@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib
 import logging
 import platform
@@ -10,12 +11,13 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Coroutine
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from contextlib import suppress
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from types import TracebackType
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Any, ParamSpec, Self, TypeVar
 
 import ifaddr
 import memory_tempfile
@@ -39,7 +41,7 @@ HA_WHEELS = "https://wheels.home-assistant.io/musllinux/"
 async def install_package(package: str) -> None:
     """Install package with pip, raise when install failed."""
     LOGGER.debug("Installing python package %s", package)
-    args = ["pip", "install", "--find-links", HA_WHEELS, package]
+    args = ["uv", "pip", "install", "--no-cache", "--find-links", HA_WHEELS, package]
     return_code, output = await check_output(*args)
 
     if return_code != 0:
@@ -47,19 +49,16 @@ async def install_package(package: str) -> None:
         raise RuntimeError(msg)
 
 
-async def get_package_version(pkg_name: str) -> str:
+async def get_package_version(pkg_name: str) -> str | None:
     """
     Return the version of an installed (python) package.
 
-    Will return `0.0.0` if the package is not found.
+    Will return None if the package is not found.
     """
     try:
-        installed_version = await asyncio.to_thread(pkg_version, pkg_name)
-        if installed_version is None:
-            return "0.0.0"  # type: ignore[unreachable]
-        return installed_version
+        return await asyncio.to_thread(pkg_version, pkg_name)
     except PackageNotFoundError:
-        return "0.0.0"
+        return None
 
 
 async def get_ips(include_ipv6: bool = False, ignore_loopback: bool = True) -> set[str]:
@@ -110,6 +109,9 @@ async def load_provider_module(domain: str, requirements: list[str]) -> Provider
             continue
         package_name, version = requirement.split("==", 1)
         installed_version = await get_package_version(package_name)
+        if installed_version == "0.0.0":
+            # ignore editable installs
+            continue
         if installed_version != version:
             await install_package(requirement)
 
@@ -151,6 +153,20 @@ def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> st
     return None
 
 
+def get_port_from_zeroconf(discovery_info: AsyncServiceInfo) -> str | None:
+    """Get primary IP address from zeroconf discovery info."""
+    return discovery_info.port
+
+
+async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
+    """Force close an async generator."""
+    task = asyncio.create_task(agen.__anext__())
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+    await agen.aclose()
+
+
 class TaskManager:
     """
     Helper class to run many tasks at once.
@@ -160,15 +176,29 @@ class TaskManager:
     Logging of exceptions is done by the mass.create_task helper.
     """
 
-    def __init__(self, mass: MusicAssistant):
+    def __init__(self, mass: MusicAssistant, limit: int = 0):
         """Initialize the TaskManager."""
         self.mass = mass
         self._tasks: list[asyncio.Task] = []
+        self._semaphore = asyncio.Semaphore(limit) if limit else None
 
-    def create_task(self, coro: Coroutine) -> None:
+    def create_task(self, coro: Coroutine) -> asyncio.Task:
         """Create a new task and add it to the manager."""
         task = self.mass.create_task(coro)
         self._tasks.append(task)
+        return task
+
+    async def create_task_with_limit(self, coro: Coroutine) -> None:
+        """Create a new task with semaphore limit."""
+        assert self._semaphore is not None
+
+        def task_done_callback(_task: asyncio.Task) -> None:
+            self._tasks.remove(task)
+            self._semaphore.release()
+
+        await self._semaphore.acquire()
+        task: asyncio.Task = self.create_task(coro)
+        task.add_done_callback(task_done_callback)
 
     async def __aenter__(self) -> Self:
         """Enter context manager."""
@@ -184,3 +214,24 @@ class TaskManager:
         if len(self._tasks) > 0:
             await asyncio.wait(self._tasks)
             self._tasks.clear()
+
+
+_R = TypeVar("_R")
+_P = ParamSpec("_P")
+
+
+def lock(
+    func: Callable[_P, Awaitable[_R]],
+) -> Callable[_P, Coroutine[Any, Any, _R]]:
+    """Call async function using a Lock."""
+
+    @functools.wraps(func)
+    async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        """Call async function using the throttler with retries."""
+        if not (func_lock := getattr(func, "lock", None)):
+            func_lock = asyncio.Lock()
+            func.lock = func_lock
+        async with func_lock:
+            return await func(*args, **kwargs)
+
+    return wrapper

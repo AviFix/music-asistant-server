@@ -28,6 +28,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_EQ_BASS,
     CONF_ENTRY_EQ_MID,
     CONF_ENTRY_EQ_TREBLE,
+    CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CHANNELS,
     CONF_ENTRY_SYNC_ADJUST,
     ConfigEntry,
@@ -58,10 +59,11 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.helpers.audio import get_ffmpeg_stream, get_player_filter_params
-from music_assistant.server.helpers.multi_client_stream import MultiClientStream
 from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.player_provider import PlayerProvider
 from music_assistant.server.providers.ugp import UniversalGroupProvider
+
+from .multi_client_stream import MultiClientStream
 
 if TYPE_CHECKING:
     from aioslimproto.models import SlimEvent
@@ -226,7 +228,7 @@ class SlimprotoProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -317,6 +319,7 @@ class SlimprotoProvider(PlayerProvider):
                 CONF_ENTRY_SYNC_ADJUST,
                 CONF_ENTRY_DISPLAY,
                 CONF_ENTRY_VISUALIZATION,
+                CONF_ENTRY_HTTP_PROFILE_FORCED_2,
                 create_sample_rates_config_entry(int(slimclient.max_sample_rate), 24, 48000, 24),
             )
         )
@@ -368,7 +371,9 @@ class SlimprotoProvider(PlayerProvider):
 
         # this is a syncgroup, we need to handle this with a multi client stream
         master_audio_format = AudioFormat(
-            content_type=ContentType.from_bit_depth(24), sample_rate=48000, bit_depth=24
+            content_type=ContentType.PCM_F32LE,
+            sample_rate=48000,
+            bit_depth=32,
         )
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
@@ -462,12 +467,14 @@ class SlimprotoProvider(PlayerProvider):
             transition_duration = 0
 
         metadata = {
-            "item_id": media.queue_item_id or media.uri,
+            "item_id": media.uri,
             "title": media.title,
             "album": media.album,
             "artist": media.artist,
             "image_url": media.image_url,
             "duration": media.duration,
+            "queue_id": media.queue_id,
+            "queue_item_id": media.queue_item_id,
         }
         queue = self.mass.player_queues.get(media.queue_id or player_id)
         slimplayer.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
@@ -640,7 +647,6 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.VOLUME_SET,
                     PlayerFeature.PAUSE,
                     PlayerFeature.VOLUME_MUTE,
-                    PlayerFeature.ENQUEUE_NEXT,
                 ),
                 can_sync_with=tuple(
                     x.player_id for x in self.slimproto.players if x.player_id != player_id
@@ -650,11 +656,19 @@ class SlimprotoProvider(PlayerProvider):
 
         # update player state on player events
         player.available = True
-        player.current_item_id = (
-            slimplayer.current_media.metadata.get("item_id")
-            if slimplayer.current_media and slimplayer.current_media.metadata
-            else slimplayer.current_url
-        )
+        if slimplayer.current_media and (metadata := slimplayer.current_media.metadata):
+            player.current_media = PlayerMedia(
+                uri=metadata.get("item_id"),
+                title=metadata.get("title"),
+                album=metadata.get("album"),
+                artist=metadata.get("artist"),
+                image_url=metadata.get("image_url"),
+                duration=metadata.get("duration"),
+                queue_id=metadata.get("queue_id"),
+                queue_item_id=metadata.get("queue_item_id"),
+            )
+        else:
+            player.current_media = None
         player.active_source = player.player_id
         player.name = slimplayer.name
         player.powered = slimplayer.powered
@@ -671,7 +685,9 @@ class SlimprotoProvider(PlayerProvider):
 
         # elapsed time change on the player will be auto picked up
         # by the player manager.
-        player = self.mass.players.get(slimplayer.player_id)
+        if not (player := self.mass.players.get(slimplayer.player_id)):
+            # race condition?!
+            return
         player.elapsed_time = slimplayer.elapsed_seconds
         player.elapsed_time_last_updated = time.time()
 
@@ -845,7 +861,7 @@ class SlimprotoProvider(PlayerProvider):
             )
             self.mass.players.update(_player.player_id)
         # restore volume and power state
-        if last_state := await self.mass.cache.get(f"{CACHE_KEY_PREV_STATE}.{player_id}"):
+        if last_state := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_STATE):
             init_power = last_state[0]
             init_volume = last_state[1]
         else:

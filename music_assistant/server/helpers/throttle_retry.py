@@ -99,11 +99,11 @@ class ThrottlerManager:
 
 def throttle_with_retries(
     func: Callable[Concatenate[_ProviderT, _P], Awaitable[_R]],
-) -> Callable[Concatenate[_ProviderT, _P], Coroutine[Any, Any, _R | None]]:
+) -> Callable[Concatenate[_ProviderT, _P], Coroutine[Any, Any, _R]]:
     """Call async function using the throttler with retries."""
 
     @functools.wraps(func)
-    async def wrapper(self: _ProviderT, *args: _P.args, **kwargs: _P.kwargs) -> _R | None:
+    async def wrapper(self: _ProviderT, *args: _P.args, **kwargs: _P.kwargs) -> _R:
         """Call async function using the throttler with retries."""
         # the trottler attribute must be present on the class
         throttler: ThrottlerManager = self.throttler
@@ -117,7 +117,7 @@ def throttle_with_retries(
                 try:
                     return await func(self, *args, **kwargs)
                 except ResourceTemporarilyUnavailable as e:
-                    backoff_time += e.backoff_time
+                    backoff_time = e.backoff_time or backoff_time
                     self.logger.info(
                         f"Attempt {attempt + 1}/{throttler.retry_attempts} failed: {e}"
                     )

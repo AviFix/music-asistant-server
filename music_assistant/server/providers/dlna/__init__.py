@@ -26,6 +26,7 @@ from async_upnp_client.search import async_search
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
+    CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_ENFORCE_MP3,
     CONF_ENTRY_HTTP_PROFILE,
     ConfigEntry,
@@ -63,24 +64,13 @@ BASE_PLAYER_FEATURES = (
     PlayerFeature.VOLUME_SET,
 )
 
-CONF_ENQUEUE_NEXT = "enqueue_next"
-
 
 PLAYER_CONFIG_ENTRIES = (
-    ConfigEntry(
-        key=CONF_ENQUEUE_NEXT,
-        type=ConfigEntryType.BOOLEAN,
-        label="Player supports enqueue next/gapless",
-        default_value=False,
-        description="If the player supports enqueuing the next item for fluid/gapless playback. "
-        "\n\nUnfortunately this feature is missing or broken on many DLNA players. \n"
-        "Enable it with care. If music stops after one song, "
-        "disable this setting (and use flow-mode instead).",
-    ),
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_ENFORCE_MP3,
     CONF_ENTRY_HTTP_PROFILE,
+    CONF_ENTRY_ENABLE_ICY_METADATA,
     create_sample_rates_config_entry(192000, 24, 96000, 24),
 )
 
@@ -361,12 +351,21 @@ class DLNAPlayerProvider(PlayerProvider):
             media.uri = media.uri.replace(".flac", ".mp3")
         didl_metadata = create_didl_metadata(media)
         title = media.title or media.uri
-        await dlna_player.device.async_set_next_transport_uri(media.uri, title, didl_metadata)
-        self.logger.debug(
-            "Enqued next track (%s) to player %s",
-            title,
-            dlna_player.player.display_name,
-        )
+        try:
+            await dlna_player.device.async_set_next_transport_uri(media.uri, title, didl_metadata)
+        except UpnpError:
+            self.logger.error(
+                "Enqueuing the next track failed for player %s - "
+                "the player probably doesn't support this. "
+                "Enable 'flow mode' for this player.",
+                dlna_player.player.display_name,
+            )
+        else:
+            self.logger.debug(
+                "Enqued next track (%s) to player %s",
+                title,
+                dlna_player.player.display_name,
+            )
 
     @catch_request_errors
     async def cmd_pause(self, player_id: str) -> None:
@@ -625,9 +624,3 @@ class DLNAPlayerProvider(PlayerProvider):
     def _set_player_features(self, dlna_player: DLNAPlayer) -> None:
         """Set Player Features based on config values and capabilities."""
         dlna_player.player.supported_features = BASE_PLAYER_FEATURES
-        player_id = dlna_player.player.player_id
-        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENQUEUE_NEXT, False):
-            dlna_player.player.supported_features = (
-                *dlna_player.player.supported_features,
-                PlayerFeature.ENQUEUE_NEXT,
-            )
