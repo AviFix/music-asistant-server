@@ -4,16 +4,13 @@ from __future__ import annotations
 
 import os
 import platform
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.util import get_ip_from_host
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import LoginFailed
-from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
-from music_assistant.server.helpers.audio import get_file_stream
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.process import check_output
 from music_assistant.server.providers.filesystem_local import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
@@ -21,7 +18,6 @@ from music_assistant.server.providers.filesystem_local import (
     exists,
     makedirs,
 )
-from music_assistant.server.providers.filesystem_local.helpers import get_absolute_path
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
@@ -159,14 +155,6 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         """
         await self.unmount()
 
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        abs_path = get_absolute_path(self.base_path, streamdetails.item_id)
-        async for chunk in get_file_stream(self.mass, abs_path, streamdetails, seek_position):
-            yield chunk
-
     async def mount(self) -> None:
         """Mount the SMB location to a temporary folder."""
         server = str(self.config.get_value(CONF_HOST))
@@ -198,8 +186,17 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             options = ["rw"]
             if mount_options := str(self.config.get_value(CONF_MOUNT_OPTIONS)):
                 options += mount_options.split(",")
-
             options_str = ",".join(options)
+
+            # pass the username+password using (scoped) env variables
+            # to prevent leaking in the process list and special chars supported
+            env_vars = {
+                **os.environ,
+                "USER": username,
+            }
+            if password:
+                env_vars["PASSWD"] = str(password)
+
             mount_cmd = [
                 "mount",
                 "-t",
@@ -209,23 +206,16 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 f"//{server}/{share}{subfolder}",
                 self.base_path,
             ]
-
         else:
             msg = f"SMB provider is not supported on {platform.system()}"
             raise LoginFailed(msg)
 
-        self.logger.info("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
-        self.logger.debug(
+        self.logger.debug("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
             "Using mount command: %s",
-            [m.replace(str(password), "########") if password else m for m in mount_cmd],
+            " ".join(mount_cmd),
         )
-        env_vars = {
-            **os.environ,
-            "USER": username,
-        }
-        if password:
-            env_vars["PASSWD"] = str(password)
-
         returncode, output = await check_output(*mount_cmd, env=env_vars)
         if returncode != 0:
             msg = f"SMB mount failed with error: {output.decode()}"

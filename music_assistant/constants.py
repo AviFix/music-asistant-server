@@ -3,7 +3,7 @@
 import pathlib
 from typing import Final
 
-API_SCHEMA_VERSION: Final[int] = 25
+API_SCHEMA_VERSION: Final[int] = 26
 MIN_SCHEMA_VERSION: Final[int] = 24
 
 
@@ -51,7 +51,6 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 CONF_AUTO_PLAY: Final[str] = "auto_play"
-CONF_GROUP_PLAYERS: Final[str] = "group_players"
 CONF_CROSSFADE: Final[str] = "crossfade"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_HIDE_PLAYER: Final[str] = "hide_player"
@@ -66,13 +65,21 @@ CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
 CONF_HTTP_PROFILE: Final[str] = "http_profile"
+CONF_SYNC_LEADER: Final[str] = "sync_leader"
+CONF_BYPASS_NORMALIZATION_RADIO: Final[str] = "bypass_normalization_radio"
+CONF_PREVENT_SYNC_LEADER_OFF: Final[str] = "prevent_sync_leader_off"
+CONF_SYNCGROUP_DEFAULT_ON: Final[str] = "syncgroup_default_on"
+CONF_ENABLE_ICY_METADATA: Final[str] = "enable_icy_metadata"
+CONF_VOLUME_NORMALIZATION_RADIO: Final[str] = "volume_normalization_radio"
+CONF_VOLUME_NORMALIZATION_TRACKS: Final[str] = "volume_normalization_tracks"
+CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO: Final[str] = "volume_normalization_fixed_gain_radio"
+CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS: Final[str] = "volume_normalization_fixed_gain_tracks"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
 DEFAULT_PORT: Final[int] = 8095
 
 # common db tables
-DB_TABLE_TRACK_LOUDNESS: Final[str] = "track_loudness"
 DB_TABLE_PLAYLOG: Final[str] = "playlog"
 DB_TABLE_ARTISTS: Final[str] = "artists"
 DB_TABLE_ALBUMS: Final[str] = "albums"
@@ -86,6 +93,7 @@ DB_TABLE_PROVIDER_MAPPINGS: Final[str] = "provider_mappings"
 DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
+DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 
 
 # all other
