@@ -1,46 +1,52 @@
-from music_assistant.server.models.music_provider import MusicProvider
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator, Sequence
+from typing import TYPE_CHECKING
+
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.enums import ContentType, MediaType, ProviderFeature, StreamType
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
-    Track,
-    SearchResults,
-    ProviderMapping,
-    MediaItemImage,
-    ImageType,
     AudioFormat,
     ItemMapping,
-)
-from music_assistant.common.models.enums import (
-    MediaType,
-    ContentType,
-    StreamType,
-    ProviderFeature,
+    MediaItemType,
+    MediaItemImage,
+    Playlist,
+    ProviderMapping,
+    Radio,
+    SearchResults,
+    ImageType,
+    Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from collections.abc import AsyncGenerator
+from music_assistant.server.models.music_provider import MusicProvider
 
-from music_assistant.common.models.enums import (
-    ConfigEntryType,
-    ProviderFeature,
-    StreamType,
-)
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
 from gql import gql, Client
 from gql.transport.requests import RequestsHTTPTransport
 
 
-# Define the async function to setup the provider instance
-async def setup(mass, manifest, config) -> MusicProvider:
+async def setup(
+        mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return JewishMusicProvider(mass, manifest, config)
+    # setup is called when the user wants to setup a new provider instance.
+    # you are free to do any preflight checks here and but you must return
+    #  an instance of the provider.
+    return ZingMusicProvider(mass, manifest, config)
 
 
-# Define the async function to get config entries for the provider
 async def get_config_entries(
-    mass,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
+        mass: MusicAssistant,
+        instance_id: str | None = None,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """
     Return Config entries to setup this provider.
@@ -49,30 +55,26 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    return (
-        ConfigEntry(
-            key="api_key",
-            type=ConfigEntryType.STRING,
-            label="API Key",
-            required=True,
-            description="Enter your API key for the Jewish Music provider.",
-        ),
-    )
+    return ()
 
 
-# Define the JewishMusicProvider class
-class JewishMusicProvider(MusicProvider):
+class ZingMusicProvider(MusicProvider):
     def __init__(self, mass, manifest, config):
         super().__init__(mass, manifest, config)
         self.api_url = "http://jewishmusic.fm:4000/graphql"
         self.client = Client(
-            transport=RequestsHTTPTransport(url=self.api_url, verify=True, retries=3),
+            transport=RequestsHTTPTransport(
+                url=self.api_url, verify=True, retries=3),
             fetch_schema_from_transport=True,
         )
 
     @property
-    def supported_features(self) -> tuple:
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
+        # MANDATORY
+        # you should return a tuple of provider-level features
+        # here that your player provider supports or an empty tuple if none.
+        # for example 'ProviderFeature.SYNC_PLAYERS' if you can sync players.
         return (
             ProviderFeature.SEARCH,
             ProviderFeature.BROWSE,
@@ -84,18 +86,17 @@ class JewishMusicProvider(MusicProvider):
 
     @property
     def is_streaming_provider(self) -> bool:
-        """Return True if the provider is a streaming provider."""
+        # For streaming providers return True here but for local file based providers return False.
         return True
 
     async def search(
-        self,
-        search_query: str,
-        media_types: list[MediaType],
-        limit: int = 5,
+            self,
+            search_query: str,
+            media_types: list[MediaType],
+            limit: int = 5,
     ) -> SearchResults:
         """Perform search on the music provider."""
-        query = gql(
-            """
+        query = gql("""
             query SearchByName($term: String!, $skip: Int!, $take: Int!) {
                 artists(
                     where: {
@@ -116,7 +117,7 @@ class JewishMusicProvider(MusicProvider):
                     small
                     }
                 }
-                
+
                 albums(
                     where: {
                     OR: [
@@ -142,7 +143,7 @@ class JewishMusicProvider(MusicProvider):
                     small
                     }
                 }
-                
+
                 tracks(
                     where: {
                     OR: [
@@ -177,7 +178,7 @@ class JewishMusicProvider(MusicProvider):
 
 
         """
-        )
+                    )
 
         params = {"term": search_query, "take": limit, "skip": 0}
         response = self.client.execute(query, variable_values=params)
@@ -199,7 +200,7 @@ class JewishMusicProvider(MusicProvider):
 
         return SearchResults(tracks=tracks, albums=albums, artists=artists)
 
-    async def get_library_artists(self) -> list[Artist]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         query = gql(
             """
             query GetCatArtists(
@@ -237,14 +238,15 @@ class JewishMusicProvider(MusicProvider):
                 }
         """
         )
-        params = {"term": "", "skip": 0, "count": 10, "category": "popular artist"}
+        params = {"term": "", "skip": 0, "count": 10,
+                  "category": "popular artist"}
         response = self.client.execute(query, variable_values=params)
 
         artists_obj = response["artists"]
         for artist in artists_obj:
-            self._parse_artist(artist)
+            yield self._parse_artist(artist)
 
-    async def get_library_albums(self) -> list[Album]:
+    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Get full artist details by id."""
         query = gql(
             """
@@ -278,12 +280,12 @@ class JewishMusicProvider(MusicProvider):
         albums_list = []
 
         for album in albums_obj:
-            parsed_album = self._parse_album(album)
-            albums_list.append(parsed_album)
+            yield self._parse_album(album)
+            # albums_list.append(parsed_album)
 
-        return albums_list
+        # return albums_list
 
-    async def get_library_tracks(self) -> list[Track]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         query = gql(
             """
            query GetPopularTracks($count: Int!) {
@@ -327,12 +329,12 @@ class JewishMusicProvider(MusicProvider):
         tracks_list = []
 
         for track in tracks_obj:
-            parsed_track = self._parse_track(track)
-            tracks_list.append(parsed_track)
+            yield self._parse_track(track)
+            # tracks_list.append(parsed_track)
 
-        return tracks_list
+        # return tracks_list
 
-    async def get_artist_albums(self, prov_artist_id) -> list[Album]:
+    async def get_artist_albums(self, prov_artist_id) -> AsyncGenerator[Album, None]:
         """Get a list of all albums for the given artist."""
         query = gql(
             """
@@ -356,7 +358,8 @@ class JewishMusicProvider(MusicProvider):
 
         """
         )
-        params = {"term": "", "skip": 0, "count": 50, "artistId": prov_artist_id}
+        params = {"term": "", "skip": 0,
+                  "count": 50, "artistId": int(prov_artist_id)}
         response = self.client.execute(query, variable_values=params)
 
         albums_obj = response["albums"]
@@ -368,38 +371,6 @@ class JewishMusicProvider(MusicProvider):
             albums_list.append(parsed_album)
 
         return albums_list
-
-    async def get_album(self, prov_album_id) -> Album:
-        """Get full album details by id."""
-        query = gql(
-            """
-                query GetAlbumById($albumId: Int!) {
-                        album(where: { id: $albumId }) {
-                            id
-                            enName
-                            heName
-                            enDesc
-                            heDesc
-                            artists {
-                                id
-                                enName
-                                heName
-                            }
-                            images {
-                                large
-                                medium
-                                small
-                            }
-                        }
-                    }
-
-        """
-        )
-        params = {"albumId": prov_album_id}
-        response = self.client.execute(query, variable_values=params)
-
-        album_data = response["album"]
-        self._parse_album(album_data)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         query = gql(
@@ -427,7 +398,7 @@ class JewishMusicProvider(MusicProvider):
 
         """
         )
-        params = {"albumId": prov_album_id}
+        params = {"albumId": int(prov_album_id)}
         response = self.client.execute(query, variable_values=params)
 
         tracks_obj = response["album"]["tracks"]
@@ -436,6 +407,38 @@ class JewishMusicProvider(MusicProvider):
             parsed_track = self._parse_track(track)
             tracks.append(parsed_track)
         return tracks
+
+    async def get_album(self, prov_album_id) -> Album:
+        """Get full album details by id."""
+        query = gql(
+            """
+                query GetAlbumById($albumId: Int!) {
+                        album(where: { id: $albumId }) {
+                            id
+                            enName
+                            heName
+                            enDesc
+                            heDesc
+                            artists {
+                                id
+                                enName
+                                heName
+                            }
+                            images {
+                                large
+                                medium
+                                small
+                            }
+                        }
+                    }
+
+        """
+        )
+        params = {"albumId": int(prov_album_id)}
+        response = self.client.execute(query, variable_values=params)
+
+        album_data = response["album"]
+        self._parse_album(album_data)
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
@@ -493,7 +496,7 @@ class JewishMusicProvider(MusicProvider):
             }
         """
         )
-        params = {"artistId": prov_artist_id}
+        params = {"artistId": int(prov_artist_id)}
         response = self.client.execute(query, variable_values=params)
 
         artist_obj = response["artist"]
@@ -516,7 +519,8 @@ class JewishMusicProvider(MusicProvider):
         )
 
         if artist_obj.get("images"):
-            artist.metadata.images = self._parse_thumbnails(artist_obj["images"])
+            artist.metadata.images = self._parse_thumbnails(
+                artist_obj["images"])
         return artist
 
     def _parse_album(self, album_obj) -> Album:
@@ -570,9 +574,9 @@ class JewishMusicProvider(MusicProvider):
             ]
 
         if (
-            track_obj.get("album")
-            and isinstance(track_obj.get("album"), dict)
-            and track_obj["album"].get("id")
+                track_obj.get("album")
+                and isinstance(track_obj.get("album"), dict)
+                and track_obj["album"].get("id")
         ):
             album = track_obj["album"]
             track.album = self._get_item_mapping(
@@ -621,7 +625,7 @@ class JewishMusicProvider(MusicProvider):
         return result
 
     def _get_item_mapping(
-        self, media_type: MediaType, key: str, name: str
+            self, media_type: MediaType, key: str, name: str
     ) -> ItemMapping:
         return ItemMapping(
             media_type=media_type,
