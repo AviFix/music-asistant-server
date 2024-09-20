@@ -447,7 +447,8 @@ class PlayerQueuesController(CoreController):
         else:
             cur_index = queue.current_index or 0
         insert_at_index = cur_index + 1 if self._queue_items.get(queue_id) else 0
-        shuffle = queue.shuffle_enabled and len(queue_items) > 1
+        # Radio modes are already shuffled in a pattern we would like to keep.
+        shuffle = queue.shuffle_enabled and len(queue_items) > 1 and not radio_mode
 
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
@@ -780,11 +781,8 @@ class PlayerQueuesController(CoreController):
         queue.current_index = index
         queue.index_in_buffer = index
         queue.flow_mode_start_index = index
-        player_needs_flow_mode = await self.mass.config.get_player_config_value(
-            queue_id, CONF_FLOW_MODE
-        )
+        queue.flow_mode = await self.mass.config.get_player_config_value(queue_id, CONF_FLOW_MODE)
         next_index = self._get_next_index(queue_id, index, allow_repeat=False)
-        queue.flow_mode = player_needs_flow_mode and next_index is not None
         queue.stream_finished = False
         queue.end_of_track_reached = False
 
@@ -1075,7 +1073,7 @@ class PlayerQueuesController(CoreController):
             msg = f"PlayerQueue {queue_id} is not available"
             raise PlayerUnavailableError(msg)
         if current_item_id_or_index is None:
-            cur_index = queue.index_in_buffer
+            cur_index = queue.index_in_buffer or queue.current_index or 0
         elif isinstance(current_item_id_or_index, str):
             cur_index = self.index_by_id(queue_id, current_item_id_or_index)
         else:
@@ -1156,8 +1154,9 @@ class PlayerQueuesController(CoreController):
         self.signal_update(queue_id)
         # enqueue the next track as soon as the player reports
         # it has started buffering the given queue item
-        task_id = f"enqueue_next_{queue_id}"
-        self.mass.call_later(2, self._enqueue_next, queue, item_id, task_id=task_id)
+        if not queue.flow_mode:
+            task_id = f"enqueue_next_{queue_id}"
+            self.mass.call_later(2, self._enqueue_next, queue, item_id, task_id=task_id)
 
     # Main queue manipulation methods
 

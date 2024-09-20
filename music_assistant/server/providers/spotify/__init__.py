@@ -41,12 +41,8 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-
-# pylint: disable=no-name-in-module
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.app_vars import app_var
-
-# pylint: enable=no-name-in-module
 from music_assistant.server.helpers.audio import get_chunksize
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.process import AsyncProcess, check_output
@@ -602,7 +598,7 @@ class SpotifyProvider(MusicProvider):
             self.logger.warning(
                 "librespot failed to stream track, retrying... (attempt %s/3)", attempt
             )
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.1)
 
     def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""
@@ -885,7 +881,7 @@ class SpotifyProvider(MusicProvider):
             # so it will be retried (and the token refreshed)
             if response.status == 401:
                 self._auth_info = None
-                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=0.1)
 
             # handle 404 not found, convert to MediaNotFoundError
             if response.status == 404:
